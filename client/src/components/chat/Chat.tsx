@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Send, Loader2, RotateCcw, CheckCircle2, Check, X, RefreshCw } from "lucide-react";
 import { ChatMessage } from "./ChatMessage";
+import { SuggestedQueries } from "./SuggestedQueries";
 import type { Message } from "./types";
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
@@ -16,7 +17,7 @@ const INITIAL_MESSAGE: Message = {
   id: generateId(),
   role: "assistant",
   content:
-    "Hello! I'm your ASU enrollment data assistant. I can help you query student enrollment information. Just tell me what you'd like to know - for example, 'How many students were enrolled in Fall 2024?' or 'Show me graduate enrollment trends.'",
+    "Hello! I'm your **ASU enrollment data assistant**. I can help you query student enrollment information from **Fall 2012** through **Fall 2025**.\n\nJust tell me what you'd like to know - for example:\n- How many students were enrolled in Fall 2024?\n- Show me graduate enrollment trends",
   timestamp: new Date(),
 };
 
@@ -45,6 +46,13 @@ export const Chat = () => {
     scrollToBottom();
   }, [messages]);
 
+  useEffect(() => {
+    // Auto-focus input after loading completes
+    if (!isLoading && !isConfirmed && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isLoading, isConfirmed]);
+
   const handleStartNewConversation = () => {
     setMessages([
       {
@@ -58,6 +66,8 @@ export const Chat = () => {
     setIsAwaitingConfirmation(false);
     setInput("");
     console.log("Started new conversation");
+    // Focus input after state updates
+    setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   const handleSendMessage = async () => {
@@ -115,6 +125,7 @@ export const Chat = () => {
         role: "assistant",
         content: data.response,
         timestamp: new Date(),
+        suggestedQueries: data.suggested_queries || [],
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -184,6 +195,7 @@ export const Chat = () => {
         role: "assistant",
         content: data.response,
         timestamp: new Date(),
+        suggestedQueries: data.suggested_queries || [],
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -192,6 +204,30 @@ export const Chat = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSuggestedQueryClick = (query: string) => {
+    if (isLoading) return;
+    console.log("Suggested query clicked:", query);
+
+    // If query is confirmed, start a new conversation with the suggested query
+    if (isConfirmed) {
+      setMessages([
+        {
+          ...INITIAL_MESSAGE,
+          id: generateId(),
+          timestamp: new Date(),
+        },
+      ]);
+      setConversationId(null);
+      setIsConfirmed(false);
+      setIsAwaitingConfirmation(false);
+      console.log("Started new conversation with suggested query");
+    }
+
+    setInput(query);
+    // Use setTimeout to ensure state updates have completed before focusing
+    setTimeout(() => inputRef.current?.focus(), 0);
   };
 
   return (
@@ -210,7 +246,20 @@ export const Chat = () => {
       <ScrollArea ref={scrollAreaRef} className="flex-1 px-2 sm:px-4">
         <div className="py-2 sm:py-4">
           {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} />
+            <div key={message.id}>
+              <ChatMessage message={message} />
+              {message.role === "assistant" &&
+                message.suggestedQueries &&
+                message.suggestedQueries.length > 0 && (
+                  <div className="ml-12 sm:ml-14 mr-2 sm:mr-4">
+                    <SuggestedQueries
+                      queries={message.suggestedQueries}
+                      onQueryClick={handleSuggestedQueryClick}
+                      disabled={isLoading}
+                    />
+                  </div>
+                )}
+            </div>
           ))}
           {isLoading && (
             <div className="flex gap-2 sm:gap-3 p-3 sm:p-4">

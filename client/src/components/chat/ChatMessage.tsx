@@ -3,6 +3,8 @@
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Bot, User } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Message } from "./types";
 
 type ChatMessageProps = {
@@ -48,7 +50,30 @@ export const ChatMessage = ({ message }: ChatMessageProps) => {
               : "bg-muted text-foreground rounded-bl-md"
           )}
         >
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          {isUser ? (
+            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          ) : (
+            <div className="markdown-content">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  p: ({ children }) => <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>,
+                  ul: ({ children }) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
+                  ol: ({ children }) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
+                  li: ({ children }) => <li className="ml-2">{children}</li>,
+                  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                  em: ({ children }) => <em className="italic">{children}</em>,
+                  code: ({ children }) => <code className="bg-muted-foreground/10 px-1 py-0.5 rounded text-xs font-mono">{children}</code>,
+                  pre: ({ children }) => <pre className="bg-muted-foreground/10 p-2 rounded overflow-x-auto my-2">{children}</pre>,
+                  h1: ({ children }) => <h1 className="text-lg font-bold mb-2 mt-3">{children}</h1>,
+                  h2: ({ children }) => <h2 className="text-base font-bold mb-2 mt-3">{children}</h2>,
+                  h3: ({ children }) => <h3 className="text-sm font-bold mb-2 mt-2">{children}</h3>,
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          )}
         </div>
         <span
           className="text-[10px] sm:text-xs text-muted-foreground mt-1 px-1"

@@ -28,9 +28,13 @@ def get_extraction_prompt(asking_for: str | None = None) -> str:
     elif asking_for == "mode":
         context_hint = "\nCONTEXT: We just asked for MODE. Short responses like 'all', 'both', 'campus', 'online' refer to mode."
     elif asking_for == "confirmation":
-        context_hint = "\nCONTEXT: We just asked the user to CONFIRM their query. Any affirmative response means is_confirmation: true."
+        context_hint = "\nCONTEXT: We just asked the user to CONFIRM their query. Any affirmative response means is_confirmation: true. Rejections like 'no' mean wants_to_change: 'yes'."
+    elif asking_for == "what_to_change":
+        context_hint = "\nCONTEXT: We asked what the user wants to change. They'll say 'term', 'level', 'mode', etc. Extract this as wants_to_change."
 
     return f"""You are a parameter extractor for ASU enrollment data queries.
+
+IMPORTANT: The most recent enrollment data available is Fall 2025. Do NOT accept terms beyond Fall 2025.
 
 Extract parameters from the user message. Return ONLY valid JSON:
 
@@ -56,9 +60,15 @@ Inference rules:
 - "2024 and 2025" → terms: ["Fall 2024", "Fall 2025"]
 - "last 3 years" → terms: ["Fall 2023", "Fall 2024", "Fall 2025"]
 - "grad", "graduate" → level: "Graduate"
+- "undergrad", "undergraduate" → level: "Undergraduate"
+- "all levels", "both levels" → level: "All"
 - "online", "digital" → mode: "Digital Immersion"
-- "both" (for mode) → mode: "All"
+- "in-person", "campus", "on-campus" → mode: "Campus Immersion"
+- "both", "all modes", "online and in-person", "online vs in-person", "online vs. in-person", "digital and campus" → mode: "All"
 - "yes", "ok", "okay", "sure", "correct", "confirm", "looks good", "that's right", "yep", "yup" → is_confirmation: true
+- "no", "nope", "not right", "change", "modify", "let me change", "I want to change" → wants_to_change: "yes" (generic rejection)
+
+CRITICAL: When user asks about comparing modes (e.g., "online vs in-person"), the mode should be "All", NOT "Both".
 
 METRIC/VARIABLE REFERENCE (use exact values):
 
@@ -118,10 +128,28 @@ def extract_params(user_message: str, asking_for: str | None = None) -> Extracte
         if terms and not isinstance(terms, list):
             terms = [terms]  # Convert single string to list
 
+        # Normalize level and mode values
+        level = data.get("level")
+        mode = data.get("mode")
+
+        # Map "Both" to "All" for both level and mode
+        if level and level.lower() == "both":
+            level = "All"
+        if mode and mode.lower() == "both":
+            mode = "All"
+
+        # Validate against known valid values
+        if level and level not in VALID_LEVELS:
+            logger.warning(f"Invalid level '{level}', setting to None")
+            level = None
+        if mode and mode not in VALID_MODES:
+            logger.warning(f"Invalid mode '{mode}', setting to None")
+            mode = None
+
         extracted = ExtractedParams(
             terms=terms,
-            level=data.get("level"),
-            mode=data.get("mode"),
+            level=level,
+            mode=mode,
             metric=data.get("metric"),
             variable=data.get("variable"),
             is_confirmation=data.get("is_confirmation", False),
@@ -148,16 +176,20 @@ def generate_response(
         # This case is now handled by generate_data_response, but keep as fallback
         return f"Your query is confirmed!\n\n{state_summary}"
 
+    elif state.asking_what_to_change:
+        # User rejected confirmation, ask what they want to change
+        return "Which field would you like to change? (Term, Level, Mode, or Focus)"
+
     elif is_complete:
         # All fields collected - show structured confirmation (no LLM needed)
         return f"""I'll search for:
 
 {state_summary}
 
-Does this look correct?"""
+**Does this look correct?**"""
 
     elif state.awaiting_confirmation:
-        # User wants to change something (field was cleared, so is_complete is False)
+        # This shouldn't happen, but keep as fallback
         context = f"""User wants to make changes to their query.
 
 Current state:
@@ -183,7 +215,7 @@ Keep it SHORT. No greetings."""
         collected_str = ", ".join(collected) if collected else "nothing yet"
 
         prompts = {
-            "term": "Which semester(s)? (Fall 2012 - Fall 2025, can specify multiple)",
+            "term": "Which semester(s)? Available data: Fall 2012 - Fall 2025 (can specify multiple)",
             "level": "Undergraduate, Graduate, or All?",
             "mode": "Campus Immersion, Digital Immersion, or All?",
         }
@@ -206,10 +238,16 @@ Need: {next_field}
 Acknowledge briefly, then ask: {prompts.get(next_field, '')}
 ONE short sentence. No greetings."""
 
+    system_prompt = """You are a concise ASU enrollment assistant. Never say 'Hi there'. Be direct.
+
+IMPORTANT: The most recent enrollment data available is Fall 2025.
+
+Format your responses using Markdown when appropriate (use **bold** for emphasis)."""
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a concise ASU enrollment assistant. Never say 'Hi there'. Be direct."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": context}
         ],
         temperature=0.7,
@@ -256,14 +294,21 @@ Results:
     context += """
 
 Instructions:
-- Present the data in ONE clear sentence
+- Format the response using Markdown
+- Use **bold** for numbers and key terms
+- For single result: Present in one clear sentence
+- For multiple results: Use a bulleted list with "- **Term**: count students"
 - Format numbers with commas (e.g., 45,230)
-- For multiple terms, list each term's data on its own line
 - Do NOT add commentary, analysis, or observations about trends
-- Do NOT ask follow-up questions like "Is there anything else?"
-- Do NOT say "Based on the data" or "According to"
+- Do NOT ask follow-up questions
 - Just state the facts directly and concisely
-- Example good response: "In Fall 2024, ASU had 14,368 graduate students in Campus Immersion programs."
+
+Example responses:
+- Single term: "In Fall 2024, ASU had **14,368** graduate students in Campus Immersion programs."
+- Multiple terms:
+  - **Fall 2021**: 28,304 students
+  - **Fall 2022**: 30,445 students
+  - **Total**: 158,354 students across all terms
 """
 
     response = client.chat.completions.create(
@@ -271,14 +316,74 @@ Instructions:
         messages=[
             {
                 "role": "system",
-                "content": "You are a concise ASU enrollment data assistant. State facts only. No commentary or follow-up questions.",
+                "content": "You are a concise ASU enrollment data assistant. State facts only. No commentary or follow-up questions.\n\nIMPORTANT: The most recent enrollment data available is Fall 2025.\n\nFormat all responses using Markdown.",
             },
             {"role": "user", "content": context},
         ],
         temperature=0.3,
-        max_tokens=150,
+        max_tokens=250,
     )
 
     result = response.choices[0].message.content.strip()
     logger.info(f"Generated data response: {result[:100]}...")
     return result
+
+
+def generate_suggested_queries(state: ConversationState) -> list[str]:
+    """Generate 3-5 relevant follow-up queries based on the confirmed query."""
+    logger.info("Generating suggested follow-up queries")
+
+    # Build context about what was queried
+    terms_str = ", ".join(state.terms) if state.terms else "N/A"
+
+    context = f"""Generate 3-5 interesting follow-up questions a user might ask after querying ASU enrollment data.
+
+IMPORTANT: The most recent enrollment data available is Fall 2025. Do NOT suggest queries for terms beyond Fall 2025.
+
+Previous query:
+- Terms: {terms_str}
+- Level: {state.level}
+- Mode: {state.mode}
+- Metric: {state.metric or "Overall enrollment"}
+- Variable: {state.variable or "N/A"}
+
+Generate complementary queries that:
+1. Explore different time periods (e.g., compare to previous years, trends over time)
+2. Explore different student segments (e.g., different levels, modes, colleges, campuses)
+3. Look at related metrics (STEM vs Non-STEM, different colleges, resident status)
+4. Are natural variations of the original query
+
+Return ONLY a JSON array of 3-5 short, natural question strings. Each question should be 8-15 words.
+
+Example output format:
+["How many graduate students in Fall 2023?", "What about undergraduate enrollment for the same term?", "Show STEM enrollment trends for Fall 2024"]
+
+Return ONLY the JSON array, no other text."""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "You generate relevant follow-up questions for enrollment data queries. Return only JSON arrays.",
+            },
+            {"role": "user", "content": context},
+        ],
+        temperature=0.7,
+        max_tokens=200,
+    )
+
+    raw_response = response.choices[0].message.content.strip()
+    logger.info(f"Suggested queries raw response: {raw_response}")
+
+    try:
+        suggestions = json.loads(raw_response)
+        if isinstance(suggestions, list) and all(isinstance(s, str) for s in suggestions):
+            logger.info(f"Generated {len(suggestions)} suggested queries")
+            return suggestions[:5]  # Limit to max 5
+        else:
+            logger.warning("Invalid suggestion format, returning empty list")
+            return []
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse suggested queries: {e}")
+        return []

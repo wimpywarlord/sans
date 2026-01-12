@@ -5,4 +5,5 @@ export type Message = {
   role: MessageRole;
   content: string;
   timestamp: Date;
+  suggestedQueries?: string[];
 };

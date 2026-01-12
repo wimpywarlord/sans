@@ -2,7 +2,12 @@ import uuid
 from fastapi import APIRouter, HTTPException
 
 from schemas.chat import ChatRequest, ChatResponse, ConversationState
-from services.llm_service import extract_params, generate_response, generate_data_response
+from services.llm_service import (
+    extract_params,
+    generate_response,
+    generate_data_response,
+    generate_suggested_queries,
+)
 from services.enrollment_service import EnrollmentDataService
 from brain.utils.logger import logger
 
@@ -45,26 +50,41 @@ async def chat(request: ChatRequest) -> ChatResponse:
         if extracted.is_confirmation and state.awaiting_confirmation:
             state.confirmed = True
             state.awaiting_confirmation = False
+            state.asking_what_to_change = False
             logger.info("User confirmed the query")
 
-        # Handle change request
-        if extracted.wants_to_change:
-            change_field = extracted.wants_to_change.lower()
-            if "term" in change_field:
-                state.terms = []  # Clear terms list
-            elif "level" in change_field or "grad" in change_field:
-                state.level = None
-            elif "mode" in change_field or "campus" in change_field or "digital" in change_field:
-                state.mode = None
+        # Handle rejection/change request during confirmation
+        elif extracted.wants_to_change and state.awaiting_confirmation:
+            # User rejected the confirmation, ask what to change
             state.awaiting_confirmation = False
+            state.asking_what_to_change = True
             state.confirmed = False
+            logger.info("User rejected confirmation, asking what to change")
+
+        # Handle response when we're asking what to change
+        elif state.asking_what_to_change and extracted.wants_to_change:
+            change_field = extracted.wants_to_change.lower()
+            if "term" in change_field or "semester" in change_field or "fall" in change_field:
+                state.terms = []  # Clear terms list
+                logger.info("Clearing terms")
+            elif "level" in change_field or "grad" in change_field or "undergrad" in change_field:
+                state.level = None
+                logger.info("Clearing level")
+            elif "mode" in change_field or "campus" in change_field or "digital" in change_field or "immersion" in change_field:
+                state.mode = None
+                logger.info("Clearing mode")
+            elif "metric" in change_field or "focus" in change_field or "category" in change_field:
+                state.metric = None
+                state.variable = None
+                logger.info("Clearing metric/variable")
+            state.asking_what_to_change = False
             logger.info(f"User wants to change: {extracted.wants_to_change}")
 
         # Merge extracted params (with asking_for context for smart handling)
         state = state.merge_extracted(extracted, asking_for=asking_for)
 
-        # Check if ready for confirmation
-        if state.is_complete() and not state.confirmed and not state.awaiting_confirmation:
+        # Check if ready for confirmation (but not if we're asking what to change)
+        if state.is_complete() and not state.confirmed and not state.awaiting_confirmation and not state.asking_what_to_change:
             state.awaiting_confirmation = True
             logger.info("All required fields collected, awaiting confirmation")
 
@@ -72,6 +92,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         missing = state.get_missing_required()
         if state.awaiting_confirmation:
             next_asking_for = "confirmation"
+        elif state.asking_what_to_change:
+            next_asking_for = "what_to_change"
         elif missing and not state.confirmed:
             next_asking_for = missing[0]
         else:
@@ -82,6 +104,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         logger.info(f"Updated state: {state}, next_asking_for: {next_asking_for}")
 
         # Stage 2: Generate response
+        suggested_queries = []
         if state.confirmed:
             # Query enrollment data and generate data-driven response
             logger.info("Querying enrollment data for confirmed query")
@@ -95,6 +118,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
             )
             logger.info(f"Query returned {len(query_results.results)} results")
             response_text = generate_data_response(state, query_results)
+
+            # Generate suggested follow-up queries
+            suggested_queries = generate_suggested_queries(state)
         else:
             # Generate conversational response for parameter collection
             response_text = generate_response(
@@ -108,6 +134,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             conversation_id=conversation_id,
             confirmed=state.confirmed,
             awaiting_confirmation=state.awaiting_confirmation,
+            suggested_queries=suggested_queries,
         )
 
     except Exception as e:

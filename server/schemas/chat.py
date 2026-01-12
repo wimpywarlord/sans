@@ -11,6 +11,7 @@ class ChatResponse(BaseModel):
     conversation_id: str
     confirmed: bool = False  # True when query is confirmed, frontend can hide input
     awaiting_confirmation: bool = False  # True when showing confirmation buttons
+    suggested_queries: list[str] = []  # Suggested follow-up queries after confirmation
 
 
 class ExtractedParams(BaseModel):
@@ -33,6 +34,7 @@ class ConversationState(BaseModel):
     variable: str | None = None
     confirmed: bool = False
     awaiting_confirmation: bool = False
+    asking_what_to_change: bool = False  # User rejected confirmation, asking what to change
 
     def get_missing_required(self) -> list[str]:
         """Return list of missing required fields."""
@@ -87,6 +89,7 @@ class ConversationState(BaseModel):
             variable=new_variable,
             confirmed=self.confirmed,
             awaiting_confirmation=self.awaiting_confirmation,
+            asking_what_to_change=self.asking_what_to_change,
         )
 
     def to_summary(self) -> str:
